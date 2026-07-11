@@ -41,6 +41,7 @@
 #include "Il2Cpp/il2cpp_dump.h"
 #include "Includes/log.h"
 #include "Roboto-Regular.h"
+#include "NativeDebug.h"
 
 // Target: Polywar / KUBOOM
 #define targetLibName OBFUSCATE("libil2cpp.so")
@@ -56,6 +57,45 @@ bool g_Initialized;
 uintptr_t g_IL2Cpp;
 void *m_EGL;
 std::atomic<bool> g_Il2CppReady(false);
+
+struct UnityVector2 {
+    float x;
+    float y;
+};
+
+enum UnityTouchPhase : int32_t {
+    TouchBegan = 0,
+    TouchMoved = 1,
+    TouchStationary = 2,
+    TouchEnded = 3,
+    TouchCanceled = 4,
+};
+
+struct UnityTouch {
+    int32_t fingerId;
+    UnityVector2 position;
+    UnityVector2 rawPosition;
+    UnityVector2 positionDelta;
+    float timeDelta;
+    int32_t tapCount;
+    int32_t phase;
+    int32_t type;
+    float pressure;
+    float maximumPossiblePressure;
+    float radius;
+    float radiusVariance;
+    float altitudeAngle;
+    float azimuthAngle;
+};
+static_assert(sizeof(UnityTouch) == 68, "Unexpected UnityEngine.Touch layout");
+
+using UnityGetTouchCount = int32_t (*)(const void *method);
+using UnityGetTouchInjected = void (*)(int32_t index, UnityTouch *touch,
+                                       const void *method);
+
+UnityGetTouchCount g_UnityGetTouchCount = nullptr;
+UnityGetTouchInjected g_UnityGetTouchInjected = nullptr;
+bool g_ClearMousePosition = false;
 
 std::string GetProp(const char* key) {
     char value[PROP_VALUE_MAX];
@@ -597,6 +637,12 @@ void DrawMenu() {
             ImGui::Text("CPU: %s", GetProp("ro.product.cpu.abi").c_str());
 
             ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f),
+                               " NATIVE DEBUG LOG ");
+            ImGui::Separator();
+            ImGui::TextWrapped("%s", NativeDebug::GetLogPath());
+
+            ImGui::Spacing();
             ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.3f, 1.0f), " DUMPER ");
             ImGui::Separator();
             ImGui::TextDisabled("Dump game scripts to:");
@@ -620,8 +666,11 @@ void DrawMenu() {
 // EGL & RENDER HOOK
 // ============================================================
 
+static void UpdateUnityTouchInput();
+
 EGLBoolean (*old_eglSwapBuffers)(EGLDisplay dpy, EGLSurface surface);
 EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
+    NativeDebug::SetStage(NativeDebug::CrashStage::EglSwapEntered);
     if (!old_eglSwapBuffers)
         return EGL_FALSE;
 
@@ -630,7 +679,10 @@ EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
     if (!eglQuerySurface(dpy, surface, EGL_WIDTH, &width) ||
         !eglQuerySurface(dpy, surface, EGL_HEIGHT, &height) ||
         width <= 0 || height <= 0) {
-        return old_eglSwapBuffers(dpy, surface);
+        NativeDebug::SetStage(NativeDebug::CrashStage::SwapOriginal);
+        const EGLBoolean result = old_eglSwapBuffers(dpy, surface);
+        NativeDebug::SetStage(NativeDebug::CrashStage::Idle);
+        return result;
     }
 
     glWidth = width;
@@ -656,18 +708,31 @@ EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
         io.Fonts->AddFontFromMemoryTTF(Roboto_Regular, sizeof(Roboto_Regular), 35.0f, &font_cfg, ranges);
         is_setup = true;
         LOGI("ImGui initialized (%dx%d)", glWidth, glHeight);
+        NativeDebug::Log("imgui_initialized surface=%dx%d context=%p",
+                         glWidth, glHeight, ImGui::GetCurrentContext());
     }
 
+    NativeDebug::SetStage(NativeDebug::CrashStage::AndroidNewFrame);
     ImGui_ImplAndroid_NewFrame(glWidth, glHeight);
+    UpdateUnityTouchInput();
+    NativeDebug::SetStage(NativeDebug::CrashStage::OpenGlNewFrame);
     ImGui_ImplOpenGL3_NewFrame();
+    NativeDebug::SetStage(NativeDebug::CrashStage::ImGuiNewFrame);
     ImGui::NewFrame();
+    NativeDebug::SetStage(NativeDebug::CrashStage::DrawMenu);
     DrawMenu();
+    NativeDebug::SetStage(NativeDebug::CrashStage::DrawEsp);
     DrawESP();
+    NativeDebug::SetStage(NativeDebug::CrashStage::ImGuiRender);
     ImGui::Render();
+    NativeDebug::SetStage(NativeDebug::CrashStage::RenderDrawData);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     pthread_mutex_unlock(&g_ImGuiMutex);
 
-    return old_eglSwapBuffers(dpy, surface);
+    NativeDebug::SetStage(NativeDebug::CrashStage::SwapOriginal);
+    const EGLBoolean result = old_eglSwapBuffers(dpy, surface);
+    NativeDebug::SetStage(NativeDebug::CrashStage::Idle);
+    return result;
 }
 
 static bool InstallEglHook() {
@@ -678,6 +743,7 @@ static bool InstallEglHook() {
 
     if (!swap_buffers) {
         LOGE("EGL hook failed: eglSwapBuffers was not found");
+        NativeDebug::Log("egl_hook_failed reason=symbol_not_found");
         return false;
     }
 
@@ -685,11 +751,108 @@ static bool InstallEglHook() {
                                  (void **)&old_eglSwapBuffers);
     if (result != RT_SUCCESS || !old_eglSwapBuffers) {
         LOGE("EGL hook failed: Dobby returned %d", result);
+        NativeDebug::Log(
+            "egl_hook_failed target=%p dobby_result=%d original=%p",
+            swap_buffers, result, old_eglSwapBuffers);
         return false;
     }
 
     LOGI("EGL hook installed at %p", swap_buffers);
+    NativeDebug::Log("egl_hook_installed target=%p original=%p",
+                     swap_buffers, old_eglSwapBuffers);
     return true;
+}
+
+static bool ResolveUnityTouchInput() {
+    g_UnityGetTouchCount = reinterpret_cast<UnityGetTouchCount>(
+        Il2CppGetMethodOffset("UnityEngine.InputLegacyModule.dll", "UnityEngine",
+                              "Input", "get_touchCount", 0));
+    g_UnityGetTouchInjected = reinterpret_cast<UnityGetTouchInjected>(
+        Il2CppGetMethodOffset("UnityEngine.InputLegacyModule.dll", "UnityEngine",
+                              "Input", "GetTouch_Injected", 2));
+
+    if (!g_UnityGetTouchCount || !g_UnityGetTouchInjected) {
+        LOGW("Unity touch polling unavailable; menu remains view-only");
+        NativeDebug::Log(
+            "unity_touch_resolve_failed get_touch_count=%p get_touch_injected=%p",
+            reinterpret_cast<void *>(g_UnityGetTouchCount),
+            reinterpret_cast<void *>(g_UnityGetTouchInjected));
+        return false;
+    }
+
+    LOGI("Unity touch polling initialized");
+    NativeDebug::Log(
+        "unity_touch_resolved get_touch_count=%p get_touch_injected=%p",
+        reinterpret_cast<void *>(g_UnityGetTouchCount),
+        reinterpret_cast<void *>(g_UnityGetTouchInjected));
+    return true;
+}
+
+static void UpdateUnityTouchInput() {
+    if (!g_Il2CppReady.load() || !g_UnityGetTouchCount ||
+        !g_UnityGetTouchInjected)
+        return;
+
+    ImGuiIO &io = ImGui::GetIO();
+    NativeDebug::SetStage(NativeDebug::CrashStage::TouchCountCall);
+    const int32_t touch_count = g_UnityGetTouchCount(nullptr);
+    NativeDebug::SetTouchState(touch_count, -1, io.MousePos.x, io.MousePos.y,
+                               io.MouseDown[0]);
+    if (touch_count <= 0) {
+        NativeDebug::SetStage(NativeDebug::CrashStage::TouchApply);
+        io.MouseDown[0] = false;
+        if (g_ClearMousePosition) {
+            io.MousePos = ImVec2(-1.0f, -1.0f);
+            g_ClearMousePosition = false;
+        }
+        NativeDebug::SetTouchState(touch_count, -1, io.MousePos.x,
+                                   io.MousePos.y, io.MouseDown[0]);
+        return;
+    }
+
+    NativeDebug::Log(
+        "touch_active count=%d before_GetTouch_Injected method=%p surface=%dx%d",
+        touch_count, reinterpret_cast<void *>(g_UnityGetTouchInjected), glWidth,
+        glHeight);
+    UnityTouch touch{};
+    NativeDebug::SetStage(NativeDebug::CrashStage::TouchReadCall);
+    g_UnityGetTouchInjected(0, &touch, nullptr);
+    NativeDebug::SetTouchState(touch_count, touch.phase, touch.position.x,
+                               touch.position.y, io.MouseDown[0]);
+    NativeDebug::Log(
+        "touch_read finger=%d phase=%d position=(%.2f,%.2f) raw=(%.2f,%.2f) "
+        "delta=(%.2f,%.2f) pressure=%.3f type=%d",
+        touch.fingerId, touch.phase, touch.position.x, touch.position.y,
+        touch.rawPosition.x, touch.rawPosition.y, touch.positionDelta.x,
+        touch.positionDelta.y, touch.pressure, touch.type);
+    const ImVec2 position(touch.position.x,
+                          static_cast<float>(glHeight) - touch.position.y);
+
+    NativeDebug::SetStage(NativeDebug::CrashStage::TouchApply);
+    switch (touch.phase) {
+        case TouchBegan:
+        case TouchStationary:
+            io.MousePos = position;
+            io.MouseDown[0] = true;
+            break;
+        case TouchMoved:
+            io.MousePos = position;
+            io.MouseDown[0] = true;
+            break;
+        case TouchEnded:
+        case TouchCanceled:
+            io.MousePos = position;
+            io.MouseDown[0] = false;
+            g_ClearMousePosition = true;
+            break;
+        default:
+            NativeDebug::Log("touch_phase_unknown phase=%d", touch.phase);
+            break;
+    }
+    NativeDebug::SetTouchState(touch_count, touch.phase, position.x, position.y,
+                               io.MouseDown[0]);
+    NativeDebug::Log("touch_applied imgui_position=(%.2f,%.2f) mouse_down=%d",
+                     position.x, position.y, io.MouseDown[0] ? 1 : 0);
 }
 
 // ============================================================
@@ -698,18 +861,30 @@ static bool InstallEglHook() {
 
 void *hack_thread(void *) {
     LOGI(OBFUSCATE("Polywar cheat thread started"));
+    NativeDebug::Log(
+        "hack_thread_started model=%s android=%s abi=%s fingerprint=%s",
+        GetProp("ro.product.model").c_str(),
+        GetProp("ro.build.version.release").c_str(),
+        GetProp("ro.product.cpu.abi").c_str(),
+        GetProp("ro.build.fingerprint").c_str());
 
-    InstallEglHook();
-    __INPUT__();
+    const bool egl_hooked = InstallEglHook();
+    NativeDebug::Log("egl_install_result success=%d", egl_hooked ? 1 : 0);
 
     // Wait for il2cpp
     do { sleep(1); } while (!isLibraryLoaded(targetLibName));
     LOGI(OBFUSCATE("libil2cpp.so loaded, hooking..."));
+    NativeDebug::Log("libil2cpp_loaded");
 
     // Init IL2CPP
-    if (!Il2CppAttach(targetLibName))
+    if (!Il2CppAttach(targetLibName)) {
+        NativeDebug::Log("il2cpp_attach_failed");
         return nullptr;
+    }
+    NativeDebug::Log("il2cpp_attach_succeeded");
+    const bool touch_ready = ResolveUnityTouchInput();
     g_Il2CppReady.store(true);
+    NativeDebug::Log("runtime_ready touch_ready=%d", touch_ready ? 1 : 0);
     sleep(3);
 
     // ============================================================
@@ -831,8 +1006,15 @@ void Changes(JNIEnv *env, jclass clazz, jobject obj,
 
 __attribute__((constructor))
 void lib_main() {
+    NativeDebug::Initialize(GAME_PACKAGE);
+    NativeDebug::InstallCrashHandlers();
+    NativeDebug::Log("native_constructor_entered");
     pthread_t ptid;
-    pthread_create(&ptid, NULL, hack_thread, NULL);
+    const int result = pthread_create(&ptid, NULL, hack_thread, NULL);
+    NativeDebug::Log("hack_thread_create result=%d thread=%llu", result,
+                     static_cast<unsigned long long>(ptid));
+    if (result == 0)
+        pthread_detach(ptid);
 }
 
 int RegisterMenu(JNIEnv *env) {
@@ -902,6 +1084,10 @@ JNI_OnLoad(JavaVM *vm, void *reserved) {
     if (!vm || vm->GetEnv((void **)&env, JNI_VERSION_1_6) != JNI_OK || !env)
         return JNI_ERR;
 
+    NativeDebug::InitializeFromJava(env);
+    NativeDebug::InstallCrashHandlers();
+    NativeDebug::Log("jni_onload_entered vm=%p env=%p", vm, env);
+
     // These bridge classes exist in the standalone loader APK, but not when
     // the same .so is injected into the game process. Missing bridge classes
     // must not make ART unload the injected library while its worker is alive.
@@ -910,5 +1096,7 @@ JNI_OnLoad(JavaVM *vm, void *reserved) {
     if (RegisterPreferences(env) == JNI_OK) registered++;
     if (RegisterMain(env) == JNI_OK) registered++;
     LOGI("JNI_OnLoad complete: %d bridge classes registered", registered);
+    NativeDebug::Log("jni_onload_complete bridge_classes=%d log_path=%s",
+                     registered, NativeDebug::GetLogPath());
     return JNI_VERSION_1_6;
 }

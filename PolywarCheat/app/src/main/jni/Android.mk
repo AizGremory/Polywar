@@ -10,10 +10,12 @@ include $(CLEAR_VARS)
 LOCAL_MODULE    := MyLibName
 
 # -std=c++17 is required to support AIDE app with NDK
-LOCAL_CFLAGS := -w -s -Wno-error=format-security -fvisibility=hidden -fpermissive -fexceptions
-LOCAL_CPPFLAGS := -w -s -Wno-error=format-security -fvisibility=hidden -Werror -std=c++17
+LOCAL_CFLAGS := -w -Wno-error=format-security -fvisibility=hidden -fpermissive -fexceptions
+LOCAL_CFLAGS += -g3 -fno-omit-frame-pointer -funwind-tables
+LOCAL_CPPFLAGS := -w -Wno-error=format-security -fvisibility=hidden -Werror -std=c++17
 LOCAL_CPPFLAGS += -Wno-error=c++11-narrowing -fpermissive -Wall -fexceptions
-LOCAL_LDFLAGS += -Wl,--gc-sections,--strip-all
+LOCAL_CPPFLAGS += -g3 -fno-omit-frame-pointer -funwind-tables
+LOCAL_LDFLAGS += -Wl,--gc-sections,--build-id=sha1
 # Link against Android system libs and GLES (adjust GLES version if needed)
 LOCAL_LDLIBS := -llog -landroid -lEGL -lGLESv2 -lGLESv3 -lz
 LOCAL_ARM_MODE := arm
@@ -31,6 +33,7 @@ IMGUI_SRC_FILES := $(IMGUI_SRC_FILES:$(LOCAL_PATH)/%=%)
 
 # Here you add the cpp file to compile
 LOCAL_SRC_FILES := Main.cpp \
+	NativeDebug.cpp \
 	Substrate/hde64.c \
 	Substrate/SubstrateDebug.cpp \
 	Substrate/SubstrateHook.cpp \
