@@ -57,6 +57,45 @@ uintptr_t g_IL2Cpp;
 void *m_EGL;
 std::atomic<bool> g_Il2CppReady(false);
 
+struct UnityVector2 {
+    float x;
+    float y;
+};
+
+enum UnityTouchPhase : int32_t {
+    TouchBegan = 0,
+    TouchMoved = 1,
+    TouchStationary = 2,
+    TouchEnded = 3,
+    TouchCanceled = 4,
+};
+
+struct UnityTouch {
+    int32_t fingerId;
+    UnityVector2 position;
+    UnityVector2 rawPosition;
+    UnityVector2 positionDelta;
+    float timeDelta;
+    int32_t tapCount;
+    int32_t phase;
+    int32_t type;
+    float pressure;
+    float maximumPossiblePressure;
+    float radius;
+    float radiusVariance;
+    float altitudeAngle;
+    float azimuthAngle;
+};
+static_assert(sizeof(UnityTouch) == 68, "Unexpected UnityEngine.Touch layout");
+
+using UnityGetTouchCount = int32_t (*)(const void *method);
+using UnityGetTouchInjected = void (*)(int32_t index, UnityTouch *touch,
+                                       const void *method);
+
+UnityGetTouchCount g_UnityGetTouchCount = nullptr;
+UnityGetTouchInjected g_UnityGetTouchInjected = nullptr;
+bool g_ClearMousePosition = false;
+
 std::string GetProp(const char* key) {
     char value[PROP_VALUE_MAX];
     __system_property_get(key, value);
@@ -620,6 +659,8 @@ void DrawMenu() {
 // EGL & RENDER HOOK
 // ============================================================
 
+static void UpdateUnityTouchInput();
+
 EGLBoolean (*old_eglSwapBuffers)(EGLDisplay dpy, EGLSurface surface);
 EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
     if (!old_eglSwapBuffers)
@@ -659,6 +700,7 @@ EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
     }
 
     ImGui_ImplAndroid_NewFrame(glWidth, glHeight);
+    UpdateUnityTouchInput();
     ImGui_ImplOpenGL3_NewFrame();
     ImGui::NewFrame();
     DrawMenu();
@@ -692,6 +734,65 @@ static bool InstallEglHook() {
     return true;
 }
 
+static bool ResolveUnityTouchInput() {
+    g_UnityGetTouchCount = reinterpret_cast<UnityGetTouchCount>(
+        Il2CppGetMethodOffset("UnityEngine.InputLegacyModule.dll", "UnityEngine",
+                              "Input", "get_touchCount", 0));
+    g_UnityGetTouchInjected = reinterpret_cast<UnityGetTouchInjected>(
+        Il2CppGetMethodOffset("UnityEngine.InputLegacyModule.dll", "UnityEngine",
+                              "Input", "GetTouch_Injected", 2));
+
+    if (!g_UnityGetTouchCount || !g_UnityGetTouchInjected) {
+        LOGW("Unity touch polling unavailable; menu remains view-only");
+        return false;
+    }
+
+    LOGI("Unity touch polling initialized");
+    return true;
+}
+
+static void UpdateUnityTouchInput() {
+    if (!g_Il2CppReady.load() || !g_UnityGetTouchCount ||
+        !g_UnityGetTouchInjected)
+        return;
+
+    ImGuiIO &io = ImGui::GetIO();
+    const int32_t touch_count = g_UnityGetTouchCount(nullptr);
+    if (touch_count <= 0) {
+        io.MouseDown[0] = false;
+        if (g_ClearMousePosition) {
+            io.MousePos = ImVec2(-1.0f, -1.0f);
+            g_ClearMousePosition = false;
+        }
+        return;
+    }
+
+    UnityTouch touch{};
+    g_UnityGetTouchInjected(0, &touch, nullptr);
+    const ImVec2 position(touch.position.x,
+                          static_cast<float>(glHeight) - touch.position.y);
+
+    switch (touch.phase) {
+        case TouchBegan:
+        case TouchStationary:
+            io.MousePos = position;
+            io.MouseDown[0] = true;
+            break;
+        case TouchMoved:
+            io.MousePos = position;
+            io.MouseDown[0] = true;
+            break;
+        case TouchEnded:
+        case TouchCanceled:
+            io.MousePos = position;
+            io.MouseDown[0] = false;
+            g_ClearMousePosition = true;
+            break;
+        default:
+            break;
+    }
+}
+
 // ============================================================
 // MAIN HOOK THREAD
 // ============================================================
@@ -700,7 +801,6 @@ void *hack_thread(void *) {
     LOGI(OBFUSCATE("Polywar cheat thread started"));
 
     InstallEglHook();
-    __INPUT__();
 
     // Wait for il2cpp
     do { sleep(1); } while (!isLibraryLoaded(targetLibName));
@@ -709,6 +809,7 @@ void *hack_thread(void *) {
     // Init IL2CPP
     if (!Il2CppAttach(targetLibName))
         return nullptr;
+    ResolveUnityTouchInput();
     g_Il2CppReady.store(true);
     sleep(3);
 
