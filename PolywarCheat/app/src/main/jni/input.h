@@ -24,14 +24,7 @@ void myInput(void *thiz, void *ex_ab, void *ex_ac) {
     origInput(thiz, ex_ab, ex_ac);
     ImGui_ImplAndroid_HandleInputEvent(reinterpret_cast<AInputEvent *>(thiz));
 }
-void _InitializeMotionEvent(AInputEvent *event, const void *msg); // deklarasi eksternal
-
-void InitializeMotionEvent(AInputEvent *event, const void *msg) {
-    _InitializeMotionEvent(event, msg);
-    if (!event) return;
-
-    ImGui_ImplAndroid_HandleInputEvent(event);
-}
+// _InitializeMotionEvent is hooked via __INPUT__ if available on device
 
 
 void __INPUT__() {

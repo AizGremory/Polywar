@@ -75,7 +75,7 @@ monoString *il2cpp_string_new (const char *str){
 
 
 	template<typename T>
-   typedef struct monoArray {
+   struct monoArray {
     void *klass;
     void *monitor;
     void *bounds;

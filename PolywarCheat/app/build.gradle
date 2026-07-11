@@ -5,7 +5,7 @@ android {
     defaultConfig {
         applicationId "com.polywar.cheat"
         minSdkVersion 19
-        targetSdkVersion 29
+        targetSdkVersion 30
         versionCode 1
         versionName "1.0"
         ndk {
@@ -28,6 +28,13 @@ android {
     externalNativeBuild {
         ndkBuild {
             path file('src/main/jni/Android.mk')
+        }
+    }
+    sourceSets {
+        main {
+            // The native library is built by ndkBuild. Ignore the stale
+            // prebuilt copy under src/main/jniLibs to avoid packaging it twice.
+            jniLibs.srcDirs = []
         }
     }
 }

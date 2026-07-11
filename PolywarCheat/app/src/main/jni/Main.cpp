@@ -19,10 +19,10 @@
 #include <GLES3/gl3.h>
 #include "Includes/Logger.h"
 #include "Includes/obfuscate.h"
-#include "ImGui/FONTS/DEFAULT.h"
-#include "ImGui/Font.h"
-#include "ImGui/Icon.h"
-#include "ImGui/Iconcpp.h"
+#include "imgui/FONTS/DEFAULT.h"
+#include "imgui/Font.h"
+#include "imgui/Icon.h"
+#include "imgui/Iconcpp.h"
 #include "imgui/imgui.h"
 #include "imgui/imgui_additional.h"
 #include "imgui/backends/imgui_impl_android.h"
@@ -107,6 +107,35 @@ int hook_Weapon_get_magazine(void *instance) {
     return orig_Weapon_get_magazine(instance);
 }
 
+// --- Visual Toggles ---
+// These are used by the player-cache hook below, so keep their definitions
+// before the first call to bESPEnabled().
+bool bWallhack = false;
+bool bChams = false;
+bool bESP = false;
+bool bESPBox = false;
+bool bESPLine = false;
+bool bESPHealth = false;
+bool bESPDistance = false;
+float espLineWidth = 3.4f;
+
+// ============================================================
+// ESP PLAYER CACHE
+// ============================================================
+struct PlayerCache {
+    void *playerScript;
+    int actorID;
+    int team;
+    bool isLocal;
+    bool isDead;
+    float health;
+    float maxHealth;
+};
+PlayerCache g_PlayerCache[32];
+int g_PlayerCacheCount = 0;
+int g_LocalTeam = -1;
+void *g_LocalPlayerScript = nullptr;
+
 // --- Player Cache Hook ---
 bool bESPEnabled() { return bESPBox || bESPLine || bESP || bESPHealth || bESPDistance; }
 void (*orig_PlayerScript_SharedUpdate)(void *instance);
@@ -183,33 +212,6 @@ float hook_PlayerController_get_jumpForce(void *instance) {
     }
     return orig_PlayerController_get_jumpForce(instance);
 }
-
-// --- Visual Toggles ---
-bool bWallhack = false;
-bool bChams = false;
-bool bESP = false;
-bool bESPBox = false;
-bool bESPLine = false;
-bool bESPHealth = false;
-bool bESPDistance = false;
-float espLineWidth = 3.4f;
-
-// ============================================================
-// ESP PLAYER CACHE
-// ============================================================
-struct PlayerCache {
-    void *playerScript;
-    int actorID;
-    int team;
-    bool isLocal;
-    bool isDead;
-    float health;
-    float maxHealth;
-};
-PlayerCache g_PlayerCache[32];
-int g_PlayerCacheCount = 0;
-int g_LocalTeam = -1;
-void *g_LocalPlayerScript = nullptr;
 
 typedef void* (*il2cpp_runtime_invoke_t)(void*, void*, void**, void**);
 il2cpp_runtime_invoke_t g_il2cpp_runtime_invoke_fn = nullptr;
@@ -345,7 +347,7 @@ void DrawESP() {
 
         // Get head position
         float headPos[3] = {wx, wy + 2.0f, wz};
-        uint8_t headBoxed[0x18] = {0};
+        uint8_t headBoxed[0x1C] = {0};
         *(void**)(headBoxed) = *(void**)boxedPos;
         *(float*)(headBoxed + 0x10) = headPos[0];
         *(float*)(headBoxed + 0x14) = headPos[1];

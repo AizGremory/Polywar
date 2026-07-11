@@ -7,7 +7,7 @@ include $(PREBUILT_STATIC_LIBRARY)
 
 
 include $(CLEAR_VARS)
-LOCAL_MODULE    := PolywarCheat
+LOCAL_MODULE    := MyLibName
 
 # -std=c++17 is required to support AIDE app with NDK
 LOCAL_CFLAGS := -w -s -Wno-error=format-security -fvisibility=hidden -fpermissive -fexceptions
@@ -21,11 +21,11 @@ LOCAL_ARM_MODE := arm
 LOCAL_C_INCLUDES += $(LOCAL_PATH)
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/Includes/
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/Starcoolxdl/xdl
-LOCAL_C_INCLUDES += $(LOCAL_PATH)/ImGui
-LOCAL_C_INCLUDES += $(LOCAL_PATH)/ImGui/backends
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/imgui
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/imgui/backends
 
-IMGUI_SRC_FILES := $(wildcard $(LOCAL_PATH)/ImGui/*.cpp)
-IMGUI_SRC_FILES += $(wildcard $(LOCAL_PATH)/ImGui/backends/*.cpp)
+IMGUI_SRC_FILES := $(wildcard $(LOCAL_PATH)/imgui/*.cpp)
+IMGUI_SRC_FILES += $(wildcard $(LOCAL_PATH)/imgui/backends/*.cpp)
 IMGUI_SRC_FILES := $(IMGUI_SRC_FILES:$(LOCAL_PATH)/%=%)
 
 
