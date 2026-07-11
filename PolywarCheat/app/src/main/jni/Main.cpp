@@ -14,15 +14,16 @@
 #include <cctype>
 #include <sstream>
 #include <array>
+#include <atomic>
 #include <dlfcn.h>
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include "Includes/Logger.h"
 #include "Includes/obfuscate.h"
-#include "ImGui/FONTS/DEFAULT.h"
-#include "ImGui/Font.h"
-#include "ImGui/Icon.h"
-#include "ImGui/Iconcpp.h"
+#include "imgui/FONTS/DEFAULT.h"
+#include "imgui/Font.h"
+#include "imgui/Icon.h"
+#include "imgui/Iconcpp.h"
 #include "imgui/imgui.h"
 #include "imgui/imgui_additional.h"
 #include "imgui/backends/imgui_impl_android.h"
@@ -54,6 +55,7 @@ int glWidth, glHeight;
 bool g_Initialized;
 uintptr_t g_IL2Cpp;
 void *m_EGL;
+std::atomic<bool> g_Il2CppReady(false);
 
 std::string GetProp(const char* key) {
     char value[PROP_VALUE_MAX];
@@ -106,6 +108,35 @@ int hook_Weapon_get_magazine(void *instance) {
     }
     return orig_Weapon_get_magazine(instance);
 }
+
+// --- Visual Toggles ---
+// These are used by the player-cache hook below, so keep their definitions
+// before the first call to bESPEnabled().
+bool bWallhack = false;
+bool bChams = false;
+bool bESP = false;
+bool bESPBox = false;
+bool bESPLine = false;
+bool bESPHealth = false;
+bool bESPDistance = false;
+float espLineWidth = 3.4f;
+
+// ============================================================
+// ESP PLAYER CACHE
+// ============================================================
+struct PlayerCache {
+    void *playerScript;
+    int actorID;
+    int team;
+    bool isLocal;
+    bool isDead;
+    float health;
+    float maxHealth;
+};
+PlayerCache g_PlayerCache[32];
+int g_PlayerCacheCount = 0;
+int g_LocalTeam = -1;
+void *g_LocalPlayerScript = nullptr;
 
 // --- Player Cache Hook ---
 bool bESPEnabled() { return bESPBox || bESPLine || bESP || bESPHealth || bESPDistance; }
@@ -184,33 +215,6 @@ float hook_PlayerController_get_jumpForce(void *instance) {
     return orig_PlayerController_get_jumpForce(instance);
 }
 
-// --- Visual Toggles ---
-bool bWallhack = false;
-bool bChams = false;
-bool bESP = false;
-bool bESPBox = false;
-bool bESPLine = false;
-bool bESPHealth = false;
-bool bESPDistance = false;
-float espLineWidth = 3.4f;
-
-// ============================================================
-// ESP PLAYER CACHE
-// ============================================================
-struct PlayerCache {
-    void *playerScript;
-    int actorID;
-    int team;
-    bool isLocal;
-    bool isDead;
-    float health;
-    float maxHealth;
-};
-PlayerCache g_PlayerCache[32];
-int g_PlayerCacheCount = 0;
-int g_LocalTeam = -1;
-void *g_LocalPlayerScript = nullptr;
-
 typedef void* (*il2cpp_runtime_invoke_t)(void*, void*, void**, void**);
 il2cpp_runtime_invoke_t g_il2cpp_runtime_invoke_fn = nullptr;
 
@@ -219,7 +223,12 @@ il2cpp_runtime_invoke_t g_il2cpp_runtime_invoke_fn = nullptr;
 // ============================================================
 
 void DrawESP() {
-    auto il2cpp_handle = dlopen(targetLibName, 4);
+    if (!bESPEnabled() || !g_Il2CppReady.load())
+        return;
+
+    static void *il2cpp_handle = nullptr;
+    if (!il2cpp_handle)
+        il2cpp_handle = dlopen(targetLibName, RTLD_NOW);
     if (!il2cpp_handle) return;
 
     auto drawList = ImGui::GetForegroundDrawList();
@@ -345,7 +354,7 @@ void DrawESP() {
 
         // Get head position
         float headPos[3] = {wx, wy + 2.0f, wz};
-        uint8_t headBoxed[0x18] = {0};
+        uint8_t headBoxed[0x1C] = {0};
         *(void**)(headBoxed) = *(void**)boxedPos;
         *(float*)(headBoxed + 0x10) = headPos[0];
         *(float*)(headBoxed + 0x14) = headPos[1];
@@ -429,7 +438,6 @@ void DrawESP() {
 }
 
 void DrawMenu() {
-    auto il2cpp_handle = dlopen(targetLibName, 4);
     const ImVec2 window_size = ImVec2(720, 600);
     ImGui::SetNextWindowSize(window_size, ImGuiCond_Once);
     ImGui::Begin(" POLYWAR CHEAT | KUBOOM v2.7", nullptr, ImGuiWindowFlags_NoBringToFrontOnFocus);
@@ -612,18 +620,23 @@ void DrawMenu() {
 // EGL & RENDER HOOK
 // ============================================================
 
-int (*old_getWidth)(ANativeWindow* window);
-int hook_getWidth(ANativeWindow* window) {
-    return old_getWidth(window);
-}
-int (*old_getHeight)(ANativeWindow* window);
-int hook_getHeight(ANativeWindow* window) {
-    return old_getHeight(window);
-}
 EGLBoolean (*old_eglSwapBuffers)(EGLDisplay dpy, EGLSurface surface);
 EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
-    eglQuerySurface(dpy, surface, EGL_WIDTH, &glWidth);
-    eglQuerySurface(dpy, surface, EGL_HEIGHT, &glHeight);
+    if (!old_eglSwapBuffers)
+        return EGL_FALSE;
+
+    EGLint width = 0;
+    EGLint height = 0;
+    if (!eglQuerySurface(dpy, surface, EGL_WIDTH, &width) ||
+        !eglQuerySurface(dpy, surface, EGL_HEIGHT, &height) ||
+        width <= 0 || height <= 0) {
+        return old_eglSwapBuffers(dpy, surface);
+    }
+
+    glWidth = width;
+    glHeight = height;
+
+    pthread_mutex_lock(&g_ImGuiMutex);
 
     static bool is_setup = false;
     if (!is_setup) {
@@ -642,18 +655,41 @@ EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
         };
         io.Fonts->AddFontFromMemoryTTF(Roboto_Regular, sizeof(Roboto_Regular), 35.0f, &font_cfg, ranges);
         is_setup = true;
+        LOGI("ImGui initialized (%dx%d)", glWidth, glHeight);
     }
 
-    ImGuiIO &io = ImGui::GetIO();
+    ImGui_ImplAndroid_NewFrame(glWidth, glHeight);
     ImGui_ImplOpenGL3_NewFrame();
     ImGui::NewFrame();
     DrawMenu();
     DrawESP();
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-    ImGui::EndFrame();
+    pthread_mutex_unlock(&g_ImGuiMutex);
 
     return old_eglSwapBuffers(dpy, surface);
+}
+
+static bool InstallEglHook() {
+    void *egl_handle = dlopen("libEGL.so", RTLD_NOW);
+    void *swap_buffers = egl_handle ? dlsym(egl_handle, "eglSwapBuffers") : nullptr;
+    if (!swap_buffers)
+        swap_buffers = DobbySymbolResolver("libEGL.so", OBFUSCATE("eglSwapBuffers"));
+
+    if (!swap_buffers) {
+        LOGE("EGL hook failed: eglSwapBuffers was not found");
+        return false;
+    }
+
+    const int result = DobbyHook(swap_buffers, (void *)hook_eglSwapBuffers,
+                                 (void **)&old_eglSwapBuffers);
+    if (result != RT_SUCCESS || !old_eglSwapBuffers) {
+        LOGE("EGL hook failed: Dobby returned %d", result);
+        return false;
+    }
+
+    LOGI("EGL hook installed at %p", swap_buffers);
+    return true;
 }
 
 // ============================================================
@@ -663,25 +699,17 @@ EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
 void *hack_thread(void *) {
     LOGI(OBFUSCATE("Polywar cheat thread started"));
 
-    DobbyHook(
-        (void *)dlsym(dlopen("libandroid.so", RTLD_NOW), "ANativeWindow_getWidth"),
-        (void *)hook_getWidth, (void **)&old_getWidth);
-    DobbyHook(
-        (void *)dlsym(dlopen("libandroid.so", RTLD_NOW), "ANativeWindow_getHeight"),
-        (void *)hook_getHeight, (void **)&old_getHeight);
+    InstallEglHook();
+    __INPUT__();
 
     // Wait for il2cpp
     do { sleep(1); } while (!isLibraryLoaded(targetLibName));
     LOGI(OBFUSCATE("libil2cpp.so loaded, hooking..."));
 
-    __INPUT__();
-
-    DobbyHook(
-        (void *)DobbySymbolResolver("/system/lib/libEGL.so", OBFUSCATE("eglSwapBuffers")),
-        (void *)hook_eglSwapBuffers, (void **)&old_eglSwapBuffers);
-
     // Init IL2CPP
-    Il2CppAttach(targetLibName);
+    if (!Il2CppAttach(targetLibName))
+        return nullptr;
+    g_Il2CppReady.store(true);
     sleep(3);
 
     // ============================================================
@@ -817,8 +845,16 @@ int RegisterMenu(JNIEnv *env) {
         {OBFUSCATE("EnglishList"), OBFUSCATE("()[Ljava/lang/String;"), reinterpret_cast<void *>(EnglishList)},
     };
     jclass clazz = env->FindClass(OBFUSCATE("com/polywar/cheat/Menu"));
-    if (!clazz) return JNI_ERR;
-    if (env->RegisterNatives(clazz, methods, sizeof(methods) / sizeof(methods[0])) != 0) return JNI_ERR;
+    if (!clazz) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JNI_ERR;
+    }
+    const int result = env->RegisterNatives(clazz, methods, sizeof(methods) / sizeof(methods[0]));
+    env->DeleteLocalRef(clazz);
+    if (result != 0) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JNI_ERR;
+    }
     return JNI_OK;
 }
 
@@ -827,8 +863,16 @@ int RegisterPreferences(JNIEnv *env) {
         {OBFUSCATE("Changes"), OBFUSCATE("(Landroid/content/Context;ILjava/lang/String;IZLjava/lang/String;)V"), reinterpret_cast<void *>(Changes)},
     };
     jclass clazz = env->FindClass(OBFUSCATE("com/polywar/cheat/Preferences"));
-    if (!clazz) return JNI_ERR;
-    if (env->RegisterNatives(clazz, methods, sizeof(methods) / sizeof(methods[0])) != 0) return JNI_ERR;
+    if (!clazz) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JNI_ERR;
+    }
+    const int result = env->RegisterNatives(clazz, methods, sizeof(methods) / sizeof(methods[0]));
+    env->DeleteLocalRef(clazz);
+    if (result != 0) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JNI_ERR;
+    }
     return JNI_OK;
 }
 
@@ -837,8 +881,16 @@ int RegisterMain(JNIEnv *env) {
         {OBFUSCATE("CheckOverlayPermission"), OBFUSCATE("(Landroid/content/Context;)V"), reinterpret_cast<void *>(CheckOverlayPermission)},
     };
     jclass clazz = env->FindClass(OBFUSCATE("com/polywar/cheat/Main"));
-    if (!clazz) return JNI_ERR;
-    if (env->RegisterNatives(clazz, methods, sizeof(methods) / sizeof(methods[0])) != 0) return JNI_ERR;
+    if (!clazz) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JNI_ERR;
+    }
+    const int result = env->RegisterNatives(clazz, methods, sizeof(methods) / sizeof(methods[0]));
+    env->DeleteLocalRef(clazz);
+    if (result != 0) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JNI_ERR;
+    }
     return JNI_OK;
 }
 
@@ -846,10 +898,17 @@ extern "C"
 JNIEXPORT jint JNICALL
 JNI_OnLoad(JavaVM *vm, void *reserved) {
     jvm = vm;
-    JNIEnv *env;
-    vm->GetEnv((void **)&env, JNI_VERSION_1_6);
-    if (RegisterMenu(env) != 0) return JNI_ERR;
-    if (RegisterPreferences(env) != 0) return JNI_ERR;
-    if (RegisterMain(env) != 0) return JNI_ERR;
+    JNIEnv *env = nullptr;
+    if (!vm || vm->GetEnv((void **)&env, JNI_VERSION_1_6) != JNI_OK || !env)
+        return JNI_ERR;
+
+    // These bridge classes exist in the standalone loader APK, but not when
+    // the same .so is injected into the game process. Missing bridge classes
+    // must not make ART unload the injected library while its worker is alive.
+    int registered = 0;
+    if (RegisterMenu(env) == JNI_OK) registered++;
+    if (RegisterPreferences(env) == JNI_OK) registered++;
+    if (RegisterMain(env) == JNI_OK) registered++;
+    LOGI("JNI_OnLoad complete: %d bridge classes registered", registered);
     return JNI_VERSION_1_6;
 }

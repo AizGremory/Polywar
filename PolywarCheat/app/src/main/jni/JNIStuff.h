@@ -104,4 +104,4 @@ int ShowSoftKeyboardInput() {
 	return result;
 }
 
-#endif JNISTUFF
+#endif

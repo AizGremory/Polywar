@@ -58,7 +58,7 @@ namespace {
 
 
 // =========================================================================== //
-void Il2CppAttach(const char *name) {
+bool Il2CppAttach(const char *name) {
     void *handle = dlopen_ex(name, 0);
     while (!handle) {
         handle = dlopen_ex(name, 0);
@@ -86,7 +86,22 @@ void Il2CppAttach(const char *name) {
     il2cpp_object_new = (void *(*)(void *)) dlsym_ex(handle, "il2cpp_object_new");
     il2cpp_runtime_invoke = (void *(*)(void *, void *, void **, void **)) dlsym_ex(handle, "il2cpp_runtime_invoke");
 
+    const bool ready = il2cpp_assembly_get_image &&
+                       il2cpp_domain_get &&
+                       il2cpp_domain_get_assemblies &&
+                       il2cpp_image_get_name &&
+                       il2cpp_class_from_name &&
+                       il2cpp_class_get_method_from_name &&
+                       il2cpp_class_get_methods &&
+                       il2cpp_method_get_name &&
+                       il2cpp_method_get_param &&
+                       il2cpp_type_get_name &&
+                       il2cpp_runtime_invoke;
+
     dlclose_ex(handle);
+    if (!ready)
+        IL2CPP_LOGE("Required IL2CPP exports are unavailable; gameplay hooks disabled");
+    return ready;
 }
 // =========================================================================== //
 typedef unsigned short UTF16;
@@ -407,4 +422,3 @@ bool Il2CppIsAssembliesLoaded() {
     return size != 0 && assemblies != 0;
 }
 // ================================================================================================================ //
-

@@ -263,7 +263,7 @@ template<typename K, typename V> struct Il2CppDictionary {
 template<typename K, typename V>
 using Dictionary = Il2CppDictionary<K, V>;
 
-void Il2CppAttach(const char *name);
+bool Il2CppAttach(const char *name);
 void *Il2CppGetImageByName(const char *image);
 void *Il2CppGetClassType(const char *image, const char *namespaze, const char *clazz);
 void *Il2CppCreateClassInstance(const char *image, const char *namespaze, const char *clazz);
@@ -283,4 +283,3 @@ unsigned long Il2CppGetStaticFieldOffset(const char *image, const char *namespaz
 bool Il2CppIsAssembliesLoaded();
 void *Il2cppRuntimeInvoke(void *method, void *obj, void **params, void **exc);
 #endif
-
